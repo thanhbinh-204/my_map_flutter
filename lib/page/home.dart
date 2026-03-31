@@ -88,10 +88,17 @@ class _HomeState extends State<Home> {
   // hàm lấy route
   Future<void> getRoute() async {
     if (currentLocation == null || searchedLocation == null) return;
+
     final points = await routeService.getRoute(
       currentLocation!,
       searchedLocation!,
     );
+
+    if (points.isEmpty) {
+      print("Route not found");
+      return;
+    }
+
     setState(() {
       routePoints = points;
     });
