@@ -35,6 +35,7 @@ class SearchSuggestionList extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
             onTap: () {
+              FocusScope.of(context).unfocus(); // khi chạm thì ẩn bàn phím
               onSelect(place);
             },
           );

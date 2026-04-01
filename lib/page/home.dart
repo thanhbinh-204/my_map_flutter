@@ -2,10 +2,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:geolocator/geolocator.dart';
 import '../component/widget/search_suggestion_list.dart';
-import '../api/service/location_search_service.dart';
 import '../component/widget/bottom_place_card.dart';
+import '../component/widget/map_widget.dart';
+import '../component/widget/search_bar.dart';
+import '../component/controller/search_controller.dart';
+import '../api/service/location_service.dart';
 import '../api/service/route_service.dart';
 
 class Home extends StatefulWidget {
@@ -19,19 +21,19 @@ class _HomeState extends State<Home> {
   LatLng? searchedLocation;
   final MapController mapController = MapController();
   final TextEditingController searchController = TextEditingController();
-
   // khai báo search
-  final LocationSearchService searchService = LocationSearchService();
+  final LocationSearchController searchControllerLogic =
+      LocationSearchController();
   List<dynamic> searchResults = [];
-  Timer? debounce;
-
   // khai báo tạo biến lưu card thông tin
   // địa điểm search
   Map<String, dynamic>? selectedPlace;
-
   // chỉ đường
-  RouteService routeService = RouteService();
+  final RouteService routeService = RouteService();
   List<LatLng> routePoints = [];
+  // thêm biến làm chức năng distance & duration
+  double? routeDistance;
+  double? routeDuration;
 
   @override
   void initState() {
@@ -42,29 +44,14 @@ class _HomeState extends State<Home> {
   @override
   void dispose() {
     searchController.dispose();
-    debounce?.cancel();
+    searchControllerLogic.dispose();
     super.dispose();
   }
 
   Future<void> getLocation() async {
-    bool serviceEnabled;
-    LocationPermission permission;
+    final location = await LocationService.getCurrentLocation();
 
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-
-    if (!serviceEnabled) {
-      return;
-    }
-
-    permission = await Geolocator.checkPermission();
-
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    Position position = await Geolocator.getCurrentPosition();
-
-    LatLng location = LatLng(position.latitude, position.longitude);
+    if (location == null) return;
 
     setState(() {
       currentLocation = location;
@@ -75,32 +62,55 @@ class _HomeState extends State<Home> {
 
   // hàm search
   Future<void> searchLocation(String query) async {
-    try {
-      final results = await searchService.searchLocation(query);
-      setState(() {
-        searchResults = results;
-      });
-    } catch (e) {
-      print(e);
-    }
+    final results = await searchControllerLogic.search(query);
+
+    setState(() {
+      searchResults = results;
+    });
   }
 
   // hàm lấy route
   Future<void> getRoute() async {
     if (currentLocation == null || searchedLocation == null) return;
 
-    final points = await routeService.getRoute(
+    final result = await routeService.getRoute(
       currentLocation!,
       searchedLocation!,
     );
 
-    if (points.isEmpty) {
+    if (result == null) {
       print("Route not found");
       return;
     }
 
     setState(() {
-      routePoints = points;
+      routePoints = result.points;
+      routeDistance = result.distance;
+      routeDuration = result.duration;
+    });
+  }
+
+  String formatDistance(double meters) {
+    return "${(meters / 1000).toStringAsFixed(1)} km";
+  }
+
+  String formatDuration(double second) {
+    return "${(second / 60).round()} phút";
+  }
+
+  // reset search
+  void clearSearch() {
+    FocusScope.of(context).unfocus(); // ẩn bàn phím khi chạm
+
+    setState(() {
+      searchController.clear();
+      searchResults = []; // reset search
+      selectedPlace = null; // ẩn bottom place card
+      searchedLocation = null; // xóa marker search
+      // xóa route chỉ đường khi nhấn close
+      routePoints = [];
+      routeDistance = null;
+      routeDuration = null;
     });
   }
 
@@ -117,62 +127,14 @@ class _HomeState extends State<Home> {
     return Scaffold(
       body: Stack(
         children: [
-          FlutterMap(
+          MapWidget(
             mapController: mapController,
-
-            // chọn hiển thị ví trí hiện tại khi bắt đầu
-            // hoặc có thể hiển thị ví trị theo tòa độ tùy chỉnh
-            options: MapOptions(
-              initialCenter: currentLocation!,
-              initialZoom: 13,
-            ),
-
-            children: [
-              TileLayer(
-                urlTemplate: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                userAgentPackageName: "com.example.map_app",
-              ),
-
-              MarkerLayer(
-                markers: [
-                  // marker vị trí hiện tại
-                  if (currentLocation != null)
-                    Marker(
-                      point: currentLocation!,
-                      width: size.width * 0.15,
-                      height: size.width * 0.15,
-                      child: Icon(
-                        Icons.location_pin,
-                        color: Colors.red,
-                        size: size.width * 0.12,
-                      ),
-                    ),
-
-                  // marker địa điểm search
-                  if (searchedLocation != null)
-                    Marker(
-                      point: searchedLocation!,
-                      width: size.width * 0.15,
-                      height: size.width * 0.15,
-                      child: Icon(
-                        Icons.place,
-                        color: Colors.blue,
-                        size: size.width * 0.11,
-                      ),
-                    ),
-                ],
-              ),
-
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: routePoints,
-                    strokeWidth: 5,
-                    color: Colors.blue,
-                  ),
-                ],
-              ),
-            ],
+            currentLocation: currentLocation!,
+            searchedLocation: searchedLocation,
+            routePoints: routePoints,
+            onTap: () {
+              FocusScope.of(context).unfocus(); // khi chạm thì ẩn bàn phím
+            },
           ),
 
           // search bar
@@ -180,69 +142,27 @@ class _HomeState extends State<Home> {
             top: size.height * 0.06,
             left: size.width * 0.05,
             right: size.width * 0.05,
-            child: Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: size.width * 0.04,
-                vertical: 10,
-              ),
-              // height: size.height * 0.08,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(30),
-                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6)],
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.location_on_outlined,
-                    color: Colors.grey,
-                    size: size.width * 0.05,
-                  ),
-                  SizedBox(width: size.width * 0.02),
-                  Expanded(
-                    child: TextField(
-                      controller: searchController,
-                      textAlignVertical: TextAlignVertical.center,
-                      decoration: InputDecoration(
-                        hintText: "Search Location...",
-                        hintStyle: TextStyle(
-                          color: Colors.grey.shade500,
-                          fontSize: size.width * 0.05,
-                        ),
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding: EdgeInsets.zero,
-                        suffixIcon:
-                            searchController.text.isNotEmpty
-                                ? IconButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      searchController.clear();
-                                    });
-                                  },
-                                  icon: Icon(
-                                    Icons.close,
-                                    size: size.width * 0.05,
-                                  ),
-                                )
-                                : null,
-                      ),
-                      onChanged: (value) {
-                        if (debounce?.isActive ?? false) debounce!.cancel();
-                        debounce = Timer(const Duration(milliseconds: 500), () {
-                          if (value.isNotEmpty) {
-                            searchLocation(value);
-                          } else {
-                            setState(() {
-                              searchResults = [];
-                            });
-                          }
-                        });
-                      },
-                    ),
-                  ),
-                ],
-              ),
+            child: SearchBarWidget(
+              controller: searchController,
+              onClear: clearSearch,
+              onChanged: (value) {
+                if (searchControllerLogic.debounce?.isActive ?? false) {
+                  searchControllerLogic.debounce!.cancel();
+                }
+
+                searchControllerLogic.debounce = Timer(
+                  const Duration(milliseconds: 500),
+                  () {
+                    if (value.isNotEmpty) {
+                      searchLocation(value);
+                    } else {
+                      setState(() {
+                        searchResults = [];
+                      });
+                    }
+                  },
+                );
+              },
             ),
           ),
 
@@ -259,14 +179,18 @@ class _HomeState extends State<Home> {
                   double lon = double.parse(place['lon']);
 
                   LatLng location = LatLng(lat, lon);
+
                   mapController.move(location, 16);
 
                   setState(() {
                     searchedLocation = location; // lưu maker search
                     selectedPlace = place; // lưu thông tin card search
+
                     searchResults = [];
                     searchController.text = place['display_name'];
                   });
+
+                  FocusScope.of(context).unfocus(); // ẩn bàn phím
                 },
               ),
             ),
@@ -278,10 +202,10 @@ class _HomeState extends State<Home> {
               left: size.width * 0.04,
               right: size.width * 0.04,
               child: BottomPlaceCard(
+                distance: routeDistance,
+                duration: routeDuration,
                 place: selectedPlace!,
-                onDirection: () {
-                  getRoute();
-                },
+                onDirection: getRoute,
                 onClose: () {
                   setState(() {
                     selectedPlace = null;
@@ -301,6 +225,7 @@ class _HomeState extends State<Home> {
               onPressed: () {
                 if (currentLocation != null) {
                   mapController.move(currentLocation!, 16);
+
                   setState(() {
                     searchedLocation = null;
                   });
