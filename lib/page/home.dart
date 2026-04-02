@@ -9,6 +9,7 @@ import '../component/widget/search_bar.dart';
 import '../component/controller/search_controller.dart';
 import '../api/service/location_service.dart';
 import '../api/service/route_service.dart';
+import '../api/model/travel_model.dart';
 
 class Home extends StatefulWidget {
   @override
@@ -34,6 +35,11 @@ class _HomeState extends State<Home> {
   // thêm biến làm chức năng distance & duration
   double? routeDistance;
   double? routeDuration;
+  // thêm state chọn phương tiện
+  TravelMode selectedMode = TravelMode.car;
+  // route animation
+  List<LatLng> animatedRoute = [];
+  Timer? routeTimer;
 
   @override
   void initState() {
@@ -43,6 +49,7 @@ class _HomeState extends State<Home> {
 
   @override
   void dispose() {
+    routeTimer?.cancel();
     searchController.dispose();
     searchControllerLogic.dispose();
     super.dispose();
@@ -73,21 +80,26 @@ class _HomeState extends State<Home> {
   Future<void> getRoute() async {
     if (currentLocation == null || searchedLocation == null) return;
 
-    final result = await routeService.getRoute(
+    final results = await routeService.getRoute(
       currentLocation!,
       searchedLocation!,
+      selectedMode,
     );
 
-    if (result == null) {
+    if (results == null) {
       print("Route not found");
       return;
     }
 
+    final route = results[0];
+
     setState(() {
-      routePoints = result.points;
-      routeDistance = result.distance;
-      routeDuration = result.duration;
+      routeDistance = route.distance;
+      routeDuration = route.duration;
     });
+
+    fitMapToRoute(route.points); // zoom map
+    animateRoute(simplifyRoute(route.points)); // chạy animation
   }
 
   String formatDistance(double meters) {
@@ -109,9 +121,53 @@ class _HomeState extends State<Home> {
       searchedLocation = null; // xóa marker search
       // xóa route chỉ đường khi nhấn close
       routePoints = [];
+      animatedRoute = [];
       routeDistance = null;
       routeDuration = null;
     });
+    routeTimer?.cancel();
+  }
+
+  // hàm animation
+  void animateRoute(List<LatLng> route) {
+    animatedRoute.clear();
+
+    int index = 0;
+
+    routeTimer?.cancel();
+
+    routeTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
+      if (index >= route.length) {
+        timer.cancel();
+        return;
+      }
+
+      setState(() {
+        animatedRoute.add(route[index]);
+      });
+
+      index++;
+    });
+  }
+
+  List<LatLng> simplifyRoute(List<LatLng> points) {
+    List<LatLng> result = [];
+
+    for (int i = 0; i < points.length; i += 3) {
+      result.add(points[i]);
+    }
+
+    return result;
+  }
+
+  // hàm camera fit map
+  void fitMapToRoute(List<LatLng> points) {
+    final bounds = LatLngBounds.fromPoints(points);
+
+    mapController.fitBounds(
+      bounds,
+      options: const FitBoundsOptions(padding: EdgeInsets.all(60)),
+    );
   }
 
   @override
@@ -119,7 +175,7 @@ class _HomeState extends State<Home> {
     //responsive
     final size = MediaQuery.of(context).size;
 
-    //hiển thị load để chờ lấy vị trí từ thiết bị
+    // hiển thị load để chờ lấy vị trí từ thiết bị
     if (currentLocation == null) {
       return Scaffold(body: Center(child: CircularProgressIndicator()));
     }
@@ -131,7 +187,7 @@ class _HomeState extends State<Home> {
             mapController: mapController,
             currentLocation: currentLocation!,
             searchedLocation: searchedLocation,
-            routePoints: routePoints,
+            routePoints: animatedRoute,
             onTap: () {
               FocusScope.of(context).unfocus(); // khi chạm thì ẩn bàn phím
             },
@@ -205,12 +261,21 @@ class _HomeState extends State<Home> {
                 distance: routeDistance,
                 duration: routeDuration,
                 place: selectedPlace!,
+                selectedMode: selectedMode,
+                onTransportChange: (mode) {
+                  setState(() {
+                    selectedMode = mode;
+                  });
+
+                  getRoute();
+                },
                 onDirection: getRoute,
                 onClose: () {
                   setState(() {
                     selectedPlace = null;
-                    routePoints = [];
+                    animatedRoute = [];
                   });
+                  routeTimer?.cancel();
                 },
               ),
             ),
